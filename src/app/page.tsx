@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { AddressTable } from "@/components/AddressTable";
@@ -21,12 +21,16 @@ function setHover(map: maplibregl.Map, id: number | string | null) {
   const src = map.getSource("parcels") as GeoJSONSource;
   if (!src) return;
 
+  // Clear previous hover
   if (hoveredId != null) {
-    map.setFeatureState({ source: "parcels", id: hoveredId }, { hover: false });
+    map.setFilter("parcels-hover", ["==", ["get", "parcel_id"], ""]);
   }
+
   hoveredId = id;
+
+  // Set new hover
   if (hoveredId != null) {
-    map.setFeatureState({ source: "parcels", id: hoveredId }, { hover: true });
+    map.setFilter("parcels-hover", ["==", ["get", "parcel_id"], hoveredId]);
   }
 }
 
@@ -34,12 +38,16 @@ function setSelected(map: maplibregl.Map, id: number | string | null) {
   const src = map.getSource("parcels") as GeoJSONSource;
   if (!src) return;
 
+  // Clear previous selection
   if (selectedId != null) {
-    map.setFeatureState({ source: "parcels", id: selectedId }, { selected: false });
+    map.setFilter("parcels-selected", ["==", ["get", "parcel_id"], ""]);
   }
+
   selectedId = id;
+
+  // Set new selection
   if (selectedId != null) {
-    map.setFeatureState({ source: "parcels", id: selectedId }, { selected: true });
+    map.setFilter("parcels-selected", ["==", ["get", "parcel_id"], selectedId]);
   }
 }
 
@@ -51,8 +59,8 @@ function setupInteractions(map: maplibregl.Map, onSelectionChange: (id: number |
     map.on("mousemove", layerId, (e: MapLayerMouseEvent) => {
       map.getCanvas().style.cursor = "pointer";
       const feature = e.features?.[0];
-      if (!feature || feature.id === undefined) return;
-      setHover(map, feature.id);
+      if (!feature || !feature.properties?.parcel_id) return;
+      setHover(map, feature.properties.parcel_id);
     });
 
     // Mouseleave - clear hover
@@ -64,21 +72,23 @@ function setupInteractions(map: maplibregl.Map, onSelectionChange: (id: number |
     // Click - select and show popup
     map.on("click", layerId, (e: MapLayerMouseEvent) => {
       const feature = e.features?.[0];
-      if (!feature || feature.id === undefined) return;
+      if (!feature || !feature.properties?.parcel_id) return;
+
+      const parcelId = feature.properties.parcel_id;
 
       // Toggle selection
-      if (selectedId === feature.id) {
+      if (selectedId === parcelId) {
         setSelected(map, null);
         loadAddressesForParcel(map, null);
         onSelectionChange(null);
       } else {
-        setSelected(map, feature.id);
-        loadAddressesForParcel(map, feature.id);
-        onSelectionChange(feature.id);
+        setSelected(map, parcelId);
+        loadAddressesForParcel(map, parcelId);
+        onSelectionChange(parcelId);
 
         // Build popup content
         const props = feature.properties || {};
-        const pid = props.parcel_id ?? feature.id;
+        const pid = props.parcel_id ?? parcelId;
         const type = props.f_type ?? "";
         const html = `
           <div style="font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #000; position: relative;">
@@ -141,8 +151,8 @@ export default function Page() {
   const [selectedParcelId, setSelectedParcelId] = useState<number | string | null>(null);
 
   // Move loadParcels to be a nested function so it has access to setSelectedParcelId
-  const createLoadParcels = (onSelectionCleared: () => void) => {
-    return async (map: maplibregl.Map, abortController?: AbortController) => {
+  const createLoadParcels = useCallback((_onSelectionCleared: () => void) => {
+    return async (map: maplibregl.Map, _abortController?: AbortController) => {
       const z = map.getZoom();
       const bbox = bboxFromMap(map);
       const zoomMessage = document.getElementById("zoom-message");
@@ -168,7 +178,7 @@ export default function Page() {
       try {
         const res = await fetch(url, {
           cache: "default", // Use browser cache
-          signal: abortController?.signal
+          signal: _abortController?.signal
         });
 
         if (res.ok) {
@@ -182,23 +192,14 @@ export default function Page() {
 
             // Re-apply selected state if it exists
             if (selectedId != null) {
-              try {
-                map.setFeatureState({ source: "parcels", id: selectedId }, { selected: true });
-              } catch {
-                // Best effort - feature might not exist in new data
-                console.log("[parcels] Could not restore selected state for", selectedId);
-                // Clear addresses if selected parcel no longer exists
-                loadAddressesForParcel(map, null);
-                selectedId = null;
-                onSelectionCleared();
-              }
+              // Since we're using filter-based selection, we just restore the filter
+              map.setFilter("parcels-selected", ["==", ["get", "parcel_id"], selectedId]);
             }
           } else {
             // First time adding source and layers
             map.addSource("parcels", {
               type: "geojson",
-              data: fc,
-              promoteId: "parcel_id"  // Enable feature-state
+              data: fc
             });
 
             // Base fill layer
@@ -224,19 +225,20 @@ export default function Page() {
               },
             });
 
-            // Hover layer
+            // Hover layer (will be controlled via setFilter)
             map.addLayer({
               id: "parcels-hover",
               type: "line",
               source: "parcels",
               paint: {
                 "line-color": "#00bcd4",
-                "line-width": 2
+                "line-width": 2,
+                "line-opacity": 1
               },
-              filter: ["==", ["feature-state", "hover"], true]
+              filter: ["==", ["get", "parcel_id"], ""]
             });
 
-            // Selected layer
+            // Selected layer (will be controlled via setFilter)
             map.addLayer({
               id: "parcels-selected",
               type: "fill",
@@ -246,7 +248,7 @@ export default function Page() {
                 "fill-opacity": 0.35,
                 "fill-outline-color": "#e09f3e"
               },
-              filter: ["==", ["feature-state", "selected"], true]
+              filter: ["==", ["get", "parcel_id"], ""]
             });
 
             // Set up interactions after layers are created
@@ -263,7 +265,7 @@ export default function Page() {
         }
       }
     };
-  };
+  }, []);
 
   useEffect(() => {
     const map = new maplibregl.Map({
@@ -275,12 +277,7 @@ export default function Page() {
 
     mapRef.current = map;
 
-    // Local function to handle parcel selection changes
-    const handleParcelSelectionChange = (id: number | string | null) => {
-      setSelectedParcelId(id);
-    };
-
-    // Create loadParcels with access to handleParcelSelectionChange
+    // Create loadParcels with access to setSelectedParcelId
     const loadParcels = createLoadParcels(() => setSelectedParcelId(null));
 
     const debouncedLoadParcels = () => {
@@ -307,8 +304,7 @@ export default function Page() {
       // Add addresses source
       map.addSource("addresses", {
         type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-        promoteId: "address_point_id"
+        data: { type: "FeatureCollection", features: [] }
       });
 
       // Add addresses layer
@@ -380,7 +376,7 @@ export default function Page() {
     };
 
     // Make it available globally for popup close button
-    (window as any).clearParcelSelection = clearParcelSelection;
+    (window as unknown as { clearParcelSelection: () => void }).clearParcelSelection = clearParcelSelection;
 
     // Set up event listener for focus-address events
     const handleFocusAddress = ({ id, lngLat }: { id: number | string; lngLat: [number, number] }) => {
@@ -394,9 +390,9 @@ export default function Page() {
       const addressesSource = map.getSource("addresses") as GeoJSONSource;
       let fullAddress = null;
 
-      if (addressesSource && addressesSource._data) {
-        const features = (addressesSource._data as any).features || [];
-        const matchingFeature = features.find((f: any) =>
+      if (addressesSource?._data) {
+        const features = (addressesSource._data as { features?: Array<{ properties?: { address_point_id?: number | string; full_address?: string } }> }).features || [];
+        const matchingFeature = features.find((f) =>
           f.properties?.address_point_id === id
         );
         fullAddress = matchingFeature?.properties?.full_address;
@@ -438,7 +434,7 @@ export default function Page() {
       }
       map.remove();
     };
-  }, []);
+  }, [createLoadParcels]);
 
   return (
     <div className="relative w-full h-screen">

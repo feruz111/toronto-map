@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { AddressTable } from "@/components/AddressTable";
+import { SearchControl } from "@/components/SearchControl";
 import { eventBus } from "@/lib/events";
 
 const MIN_Z = 10; // Minimum zoom level for parcel loading
@@ -419,13 +420,22 @@ export default function Page() {
       clearParcelSelection();
     };
 
+    // Set up event listener for parcel selection from address
+    const handleSelectParcel = ({ parcelId }: { parcelId: number | string }) => {
+      setSelected(map, parcelId);
+      loadAddressesForParcel(map, parcelId);
+      setSelectedParcelId(parcelId);
+    };
+
     eventBus.on("focus-address", handleFocusAddress);
     eventBus.on("close-table", handleCloseTable);
+    eventBus.on("select-parcel", handleSelectParcel);
 
     return () => {
       // Cleanup
       eventBus.off("focus-address", handleFocusAddress);
       eventBus.off("close-table", handleCloseTable);
+      eventBus.off("select-parcel", handleSelectParcel);
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
@@ -439,6 +449,21 @@ export default function Page() {
   return (
     <div className="relative w-full h-screen">
       <div id="map" className="w-full h-full" />
+
+      {/* Search Control - Top Left */}
+      <div
+        style={{
+          position: "absolute",
+          top: "20px",
+          left: "20px",
+          zIndex: 1000,
+          width: "320px",
+        }}
+      >
+        <SearchControl />
+      </div>
+
+      {/* Zoom Message - Top Center */}
       <div
         id="zoom-message"
         style={{
@@ -457,6 +482,8 @@ export default function Page() {
       >
         Zoom in to load parcels
       </div>
+
+      {/* Address Table - Right Side */}
       <AddressTable parcelId={selectedParcelId} />
     </div>
   );

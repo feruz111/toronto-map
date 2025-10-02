@@ -8,7 +8,9 @@ function parseBbox(url: string) {
   const s = new URL(url).searchParams.get("bbox");
   if (!s) return null;
   const a = s.split(",").map(Number);
-  return a.length === 4 && a.every((n) => Number.isFinite(n)) ? a as [number, number, number, number] : null;
+  return a.length === 4 && a.every((n) => Number.isFinite(n))
+    ? (a as [number, number, number, number])
+    : null;
 }
 
 function parseZoom(url: string) {
@@ -21,11 +23,11 @@ function toleranceForZoom(z: number) {
   // 1 degree latitude ≈ 111 km
   // 1 degree longitude ≈ 78 km at 43.65° latitude
 
-  if (z < 9) return 0.0003;    // ~30 m
-  if (z < 11) return 0.0001;   // ~10 m
-  if (z < 13) return 0.00005;  // ~5 m
-  if (z < 15) return 0.00002;  // ~2 m
-  return 0.000005;             // ~0.5 m for high zoom
+  if (z < 9) return 0.0003; // ~30 m
+  if (z < 11) return 0.0001; // ~10 m
+  if (z < 13) return 0.00005; // ~5 m
+  if (z < 15) return 0.00002; // ~2 m
+  return 0.000005; // ~0.5 m for high zoom
 }
 
 export async function GET(req: Request) {
@@ -34,16 +36,22 @@ export async function GET(req: Request) {
 
   // Validate required parameters
   if (!bbox) {
-    return NextResponse.json({ error: "bbox=minX,minY,maxX,maxY required" }, { status: 400 });
+    return NextResponse.json(
+      { error: "bbox=minX,minY,maxX,maxY required" },
+      { status: 400 },
+    );
   }
 
   if (z < 10) {
-    return NextResponse.json({ error: "Zoom in to load parcels" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Zoom in to load parcels" },
+      { status: 400 },
+    );
   }
 
   const [minX, minY, maxX, maxY] = bbox;
 
-  const queryLabel = `[parcels] query z=${z.toFixed(2)} bbox=[${bbox.join(',')}]`;
+  const queryLabel = `[parcels] query z=${z.toFixed(2)} bbox=[${bbox.join(",")}]`;
   console.time(queryLabel);
 
   const client = await pool.connect();
@@ -54,7 +62,8 @@ export async function GET(req: Request) {
 
     const tol = toleranceForZoom(z);
 
-    const { rows } = await client.query(`
+    const { rows } = await client.query(
+      `
       WITH filtered AS (
         SELECT p.objectid, 
                p.f_type,
@@ -81,43 +90,63 @@ export async function GET(req: Request) {
         ), '[]'::jsonb)
       ) AS fc
       FROM filtered;
-    `, [minX, minY, maxX, maxY, tol]);
+    `,
+      [minX, minY, maxX, maxY, tol],
+    );
 
     await client.query("COMMIT");
 
     const result = rows[0].fc;
     const featureCount = result.features.length;
 
-    console.log(`[parcels] returned ${featureCount} features for z=${z.toFixed(2)}`);
+    console.log(
+      `[parcels] returned ${featureCount} features for z=${z.toFixed(2)}`,
+    );
 
     // Return empty FeatureCollection if no results
     if (featureCount === 0) {
-      return new NextResponse(JSON.stringify({ type: "FeatureCollection", features: [] }), {
-        headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },
-      });
+      return new NextResponse(
+        JSON.stringify({ type: "FeatureCollection", features: [] }),
+        {
+          headers: {
+            "content-type": "application/json",
+            "cache-control": "public, max-age=300",
+          },
+        },
+      );
     }
 
     return new NextResponse(JSON.stringify(result), {
-      headers: { "content-type": "application/json", "cache-control": "public, max-age=600" },
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=600",
+      },
     });
-
   } catch (error: any) {
     await client.query("ROLLBACK");
 
-    console.error(`[parcels] Error for z=${z.toFixed(2)} bbox=[${bbox.join(',')}]:`, error);
+    console.error(
+      `[parcels] Error for z=${z.toFixed(2)} bbox=[${bbox.join(",")}]:`,
+      error,
+    );
 
     // Handle timeout specifically
-    if (error.code === '57014') {
-      return NextResponse.json({
-        error: "Query timeout, zoom in or try again"
-      }, { status: 504 });
+    if (error.code === "57014") {
+      return NextResponse.json(
+        {
+          error: "Query timeout, zoom in or try again",
+        },
+        { status: 504 },
+      );
     }
 
     // Generic error response
-    return NextResponse.json({
-      error: "Database query failed"
-    }, { status: 500 });
-
+    return NextResponse.json(
+      {
+        error: "Database query failed",
+      },
+      { status: 500 },
+    );
   } finally {
     client.release();
     console.timeEnd(queryLabel);

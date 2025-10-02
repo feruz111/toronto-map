@@ -118,7 +118,7 @@ function setupInteractions(map: maplibregl.Map, onSelectionChange: (id: number |
             <button onclick="this.closest('.maplibregl-popup').remove(); window.clearParcelSelection && window.clearParcelSelection();" style="position: absolute; top: -8px; right: -8px; background: none; border: none; font-size: 16px; cursor: pointer; color: #666; padding: 2px 6px; border-radius: 3px; line-height: 1;" title="Close">×</button>
             <div style="font-weight:600;margin-bottom:4px;color:#000;">Parcel ${pid}</div>
             ${type ? `<div style="color:#000;">Type: ${type}</div>` : ""}
-            <div style="margin-top:6px;color:#000;">click anywhere else to unselect</div>
+            <div style="margin-top:6px;color:#000;font-size:11px;">click anywhere else to unselect</div>
           </div>
         `;
 
@@ -172,7 +172,7 @@ async function loadSchoolsonMap(map: maplibregl.Map, schools: SchoolFeature[], a
     try {
       const geom = JSON.parse(school.geom_geojson);
       return {
-        type: "Feature",
+        type: "Feature" as const,
         geometry: geom,
         properties: {
           name: school.name,
@@ -187,18 +187,18 @@ async function loadSchoolsonMap(map: maplibregl.Map, schools: SchoolFeature[], a
   }).filter(Boolean);
 
   const geojson = {
-    type: "FeatureCollection",
-    features: features
+    type: "FeatureCollection" as const,
+    features: features.filter((f): f is NonNullable<typeof f> => f !== null)
   };
 
-  src.setData(geojson);
+  src.setData(geojson as any);
 
   // Draw lines from address to each school
   if (addressCoords) {
-    const lineFeatures = features.map(feature => ({
-      type: "Feature",
+    const lineFeatures = features.filter((f): f is NonNullable<typeof f> => f !== null).map(feature => ({
+      type: "Feature" as const,
       geometry: {
-        type: "LineString",
+        type: "LineString" as const,
         coordinates: [addressCoords, feature.geometry.coordinates]
       },
       properties: {
@@ -208,11 +208,11 @@ async function loadSchoolsonMap(map: maplibregl.Map, schools: SchoolFeature[], a
     }));
 
     const linesGeoJson = {
-      type: "FeatureCollection",
+      type: "FeatureCollection" as const,
       features: lineFeatures
     };
 
-    linesSrc.setData(linesGeoJson);
+    linesSrc.setData(linesGeoJson as any);
   }
 
   console.log(`[schools] loaded ${features.length} schools on map${addressCoords ? ' with connecting lines' : ''}`);
@@ -296,25 +296,25 @@ export default function Page() {
               data: fc
             });
 
-            // Base fill layer
+            // Base fill layer - using a land-colored palette
             map.addLayer({
               id: "parcels-fill",
               type: "fill",
               source: "parcels",
               paint: {
-                "fill-color": "#6fd3e7",
-                "fill-opacity": 0.25
+                "fill-color": "#e8f5e8",
+                "fill-opacity": 0.4
               },
             });
 
-            // Base line layer
+            // Base line layer - dark green for land boundaries
             map.addLayer({
               id: "parcels-line",
               type: "line",
               source: "parcels",
               paint: {
-                "line-color": "#1b6f7e",
-                "line-width": 0.6,
+                "line-color": "#2d5016",
+                "line-width": 0.8,
                 "line-opacity": 0.9
               },
             });
@@ -325,8 +325,8 @@ export default function Page() {
               type: "line",
               source: "parcels",
               paint: {
-                "line-color": "#00bcd4",
-                "line-width": 2,
+                "line-color": "#ff6b35",
+                "line-width": 2.5,
                 "line-opacity": 1
               },
               filter: ["==", ["get", "parcel_id"], ""]
@@ -364,7 +364,28 @@ export default function Page() {
   useEffect(() => {
     const map = new maplibregl.Map({
       container: "map",
-      style: "https://demotiles.maplibre.org/style.json",
+      style: {
+        version: 8,
+        sources: {
+          'raster-tiles': {
+            type: 'raster',
+            tiles: [
+              'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+            ],
+            tileSize: 256,
+            maxzoom: 19
+          }
+        },
+        layers: [
+          {
+            id: 'osm-tiles',
+            type: 'raster',
+            source: 'raster-tiles',
+            minzoom: 0,
+            maxzoom: 22
+          }
+        ]
+      },
       center: [-79.3832, 43.6532], // Toronto
       zoom: 12, // Start above MIN_Z so it fetches on load
     });

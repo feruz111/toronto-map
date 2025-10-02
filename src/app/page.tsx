@@ -3,8 +3,30 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { AddressTable } from "@/components/AddressTable";
+import { SchoolsTable } from "@/components/SchoolsTable";
 import { SearchControl } from "@/components/SearchControl";
 import { eventBus } from "@/lib/events";
+
+interface SchoolFeature {
+  name: string;
+  geom_geojson: string;
+  source_address: string;
+  dist_m: number;
+}
+
+interface AddressFeature {
+  type: "Feature";
+  geometry: {
+    type: "Point";
+    coordinates: [number, number];
+  };
+  properties: {
+    address_point_id: number;
+    civic_number?: string | number | null;
+    street_name?: string | null;
+    full_address?: string | null;
+  };
+}
 
 const MIN_Z = 10; // Minimum zoom level for parcel loading
 const DEBOUNCE_MS = 500; // Debounce delay for API calls
@@ -133,6 +155,69 @@ async function loadAddressesForParcel(map: maplibregl.Map, parcelId: number | st
   }
 }
 
+async function loadSchoolsonMap(map: maplibregl.Map, schools: SchoolFeature[], addressCoords?: [number, number]) {
+  const src = map.getSource("schools") as GeoJSONSource;
+  const linesSrc = map.getSource("school-lines") as GeoJSONSource;
+
+  if (!src || !linesSrc) return;
+
+  if (schools.length === 0) {
+    src.setData({ type: "FeatureCollection", features: [] });
+    linesSrc.setData({ type: "FeatureCollection", features: [] });
+    return;
+  }
+
+  // Convert schools data to GeoJSON features
+  const features = schools.map(school => {
+    try {
+      const geom = JSON.parse(school.geom_geojson);
+      return {
+        type: "Feature",
+        geometry: geom,
+        properties: {
+          name: school.name,
+          source_address: school.source_address,
+          dist_m: school.dist_m
+        }
+      };
+    } catch (error) {
+      console.error("Error parsing school geometry:", school.geom_geojson, error);
+      return null;
+    }
+  }).filter(Boolean);
+
+  const geojson = {
+    type: "FeatureCollection",
+    features: features
+  };
+
+  src.setData(geojson);
+
+  // Draw lines from address to each school
+  if (addressCoords) {
+    const lineFeatures = features.map(feature => ({
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: [addressCoords, feature.geometry.coordinates]
+      },
+      properties: {
+        school_name: feature.properties.name,
+        distance: feature.properties.dist_m
+      }
+    }));
+
+    const linesGeoJson = {
+      type: "FeatureCollection",
+      features: lineFeatures
+    };
+
+    linesSrc.setData(linesGeoJson);
+  }
+
+  console.log(`[schools] loaded ${features.length} schools on map${addressCoords ? ' with connecting lines' : ''}`);
+}
+
 async function checkDbHealth() {
   try {
     const res = await fetch("/api/db", { cache: "no-store" });
@@ -150,6 +235,14 @@ export default function Page() {
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [selectedParcelId, setSelectedParcelId] = useState<number | string | null>(null);
+  const [selectedAddress, setSelectedAddress] = useState<AddressFeature | null>(null);
+
+  // Handler for school data changes
+  const handleSchoolsChange = (schools: SchoolFeature[], addressCoords?: [number, number]) => {
+    if (mapRef.current) {
+      loadSchoolsonMap(mapRef.current, schools, addressCoords);
+    }
+  };
 
   // Move loadParcels to be a nested function so it has access to setSelectedParcelId
   const createLoadParcels = useCallback((_onSelectionCleared: () => void) => {
@@ -308,6 +401,18 @@ export default function Page() {
         data: { type: "FeatureCollection", features: [] }
       });
 
+      // Add schools source
+      map.addSource("schools", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+
+      // Add school lines source
+      map.addSource("school-lines", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+
       // Add addresses layer
       map.addLayer({
         id: "addresses-points",
@@ -323,6 +428,37 @@ export default function Page() {
           "circle-color": "#ff4d4f",
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 1
+        }
+      });
+
+      // Add schools layer
+      map.addLayer({
+        id: "schools-points",
+        type: "circle",
+        source: "schools",
+        paint: {
+          "circle-radius": [
+            "interpolate", ["linear"], ["zoom"],
+            10, 6,
+            14, 8,
+            18, 10
+          ],
+          "circle-color": "#4CAF50",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2
+        }
+      });
+
+      // Add school lines layer
+      map.addLayer({
+        id: "school-lines",
+        type: "line",
+        source: "school-lines",
+        paint: {
+          "line-color": "#FF6B35",
+          "line-width": 2,
+          "line-opacity": 0.7,
+          "line-dasharray": [5, 5]
         }
       });
 
@@ -360,6 +496,69 @@ export default function Page() {
         map.getCanvas().style.cursor = "";
       });
 
+      // Add click handler for schools
+      map.on("click", "schools-points", (e: MapLayerMouseEvent) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+
+        const props = feature.properties || {};
+        const schoolName = props.name;
+        const distance = props.dist_m;
+
+        const html = `
+          <div style="font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #000;">
+            <div style="font-weight:600; color: #000; margin-bottom: 4px;">${schoolName}</div>
+            <div style="color: #666; font-size: 11px;">Distance: ${Math.round(distance)}m</div>
+            <div style="color: #666; font-size: 11px; margin-top: 2px;">Address: ${props.source_address || 'Unknown'}</div>
+          </div>
+        `;
+
+        new maplibregl.Popup({ closeOnClick: true })
+          .setLngLat(e.lngLat)
+          .setHTML(html)
+          .addTo(map);
+      });
+
+      // Change cursor on school hover
+      map.on("mouseenter", "schools-points", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mouseleave", "schools-points", () => {
+        map.getCanvas().style.cursor = "";
+      });
+
+      // Add hover effect for school lines
+      map.on("mouseenter", "school-lines", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mouseleave", "school-lines", () => {
+        map.getCanvas().style.cursor = "";
+      });
+
+      // Add click handler for school lines
+      map.on("click", "school-lines", (e: MapLayerMouseEvent) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+
+        const props = feature.properties || {};
+        const schoolName = props.school_name;
+        const distance = props.distance;
+
+        const html = `
+          <div style="font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #000;">
+            <div style="font-weight:600; color: #000; margin-bottom: 4px;">Line to: ${schoolName}</div>
+            <div style="color: #666; font-size: 11px;">Distance: ${Math.round(distance)}m</div>
+          </div>
+        `;
+
+        new maplibregl.Popup({ closeOnClick: true })
+          .setLngLat(e.lngLat)
+          .setHTML(html)
+          .addTo(map);
+      });
+
       loadParcels(map);
     });
 
@@ -374,6 +573,8 @@ export default function Page() {
       setSelected(map, null);
       loadAddressesForParcel(map, null);
       setSelectedParcelId(null);
+      setSelectedAddress(null);
+      loadSchoolsonMap(map, []);
     };
 
     // Make it available globally for popup close button
@@ -427,15 +628,33 @@ export default function Page() {
       setSelectedParcelId(parcelId);
     };
 
+    // Set up event listener for select-address events
+    const handleSelectAddress = (address: AddressFeature) => {
+      setSelectedAddress(address);
+    };
+
+    // Set up event listener for close-schools events
+    const handleCloseSchools = () => {
+      setSelectedAddress(null);
+      if (mapRef.current) {
+        loadSchoolsonMap(mapRef.current, []);
+      }
+    };
+
+
     eventBus.on("focus-address", handleFocusAddress);
     eventBus.on("close-table", handleCloseTable);
     eventBus.on("select-parcel", handleSelectParcel);
+    eventBus.on("select-address", handleSelectAddress);
+    eventBus.on("close-schools", handleCloseSchools);
 
     return () => {
       // Cleanup
       eventBus.off("focus-address", handleFocusAddress);
       eventBus.off("close-table", handleCloseTable);
       eventBus.off("select-parcel", handleSelectParcel);
+      eventBus.off("select-address", handleSelectAddress);
+      eventBus.off("close-schools", handleCloseSchools);
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
@@ -485,6 +704,9 @@ export default function Page() {
 
       {/* Address Table - Right Side */}
       <AddressTable parcelId={selectedParcelId} />
+
+      {/* Schools Table - Left of Address Table */}
+      <SchoolsTable selectedAddress={selectedAddress} onSchoolsChange={handleSchoolsChange} />
     </div>
   );
 }

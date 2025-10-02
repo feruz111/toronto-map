@@ -1,7 +1,14 @@
-// src/components/AddressTable.tsx
+// src/components/SchoolsTable.tsx
 "use client";
 import { useEffect, useState } from "react";
 import { eventBus } from "@/lib/events";
+
+interface School {
+    name: string;
+    geom_geojson: string;
+    source_address: string;
+    dist_m: number;
+}
 
 interface AddressFeature {
     type: "Feature";
@@ -18,76 +25,60 @@ interface AddressFeature {
 }
 
 interface Props {
-    parcelId: number | string | null;
+    selectedAddress: AddressFeature | null;
+    onSchoolsChange?: (schools: School[], addressCoords?: [number, number]) => void;
 }
 
-export function AddressTable({ parcelId }: Props) {
-    const [addresses, setAddresses] = useState<AddressFeature[]>([]);
+export function SchoolsTable({ selectedAddress, onSchoolsChange }: Props) {
+    const [schools, setSchools] = useState<School[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!parcelId) {
-            setAddresses([]);
+        if (!selectedAddress) {
+            setSchools([]);
             return;
         }
 
-        const fetchAddresses = async () => {
+        const fetchSchools = async () => {
             setLoading(true);
             setError(null);
 
             try {
-                const res = await fetch(`/api/parcel/${parcelId}/addresses`, {
-                    cache: "no-store"
-                });
+                const res = await fetch(
+                    `/api/nearest-schools?lat=${selectedAddress.geometry.coordinates[1]}&lng=${selectedAddress.geometry.coordinates[0]}`,
+                    { cache: "no-store" }
+                );
 
                 if (!res.ok) {
-                    throw new Error(`Failed to fetch addresses: ${res.status}`);
+                    throw new Error(`Failed to fetch schools: ${res.status}`);
                 }
 
                 const data = await res.json();
-                setAddresses(data.features || []);
+                setSchools(data);
+                onSchoolsChange?.(data, selectedAddress.geometry.coordinates);
             } catch (err) {
-                console.error("Error fetching addresses:", err);
-                setError("Failed to load addresses");
-                setAddresses([]);
+                console.error("Error fetching schools:", err);
+                setError("Failed to load schools");
+                setSchools([]);
+                onSchoolsChange?.([]);
             } finally {
                 setLoading(false);
             }
         };
 
-        fetchAddresses();
-    }, [parcelId]);
+        fetchSchools();
+    }, [selectedAddress, onSchoolsChange]);
 
-    const handleRowClick = async (address: AddressFeature) => {
-        eventBus.emit("focus-address", {
-            id: address.properties.address_point_id,
-            lngLat: address.geometry.coordinates
-        });
-
-        // Emit selected address for schools table
-        eventBus.emit("select-address", address);
-    };
-
-    // Process addresses to include formatted address
-    const processedAddresses = addresses.map(address => ({
-        ...address,
-        displayAddress: address.properties.full_address ||
-            (address.properties.civic_number && address.properties.street_name
-                ? `${address.properties.civic_number} ${address.properties.street_name}`
-                : "(unknown)")
-    }));
-
-    // Don't render if no parcel is selected
-    if (!parcelId) return null;
+    if (!selectedAddress) return null;
 
     return (
         <div style={{
             position: "absolute",
-            right: 0,
+            right: "380px", // Position to the left of AddressTable
             top: 0,
             bottom: 0,
-            width: typeof window !== 'undefined' && window.innerWidth < 768 ? "100%" : "360px",
+            width: "320px",
             height: typeof window !== 'undefined' && window.innerWidth < 768 ? "40vh" : "100%",
             backgroundColor: "white",
             boxShadow: "-2px 0 8px rgba(0,0,0,0.1)",
@@ -105,15 +96,21 @@ export function AddressTable({ parcelId }: Props) {
             }}>
                 <div>
                     <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 600, color: "#000" }}>
-                        Addresses in Parcel {parcelId}
+                        Nearest Schools
                     </h3>
                     <div style={{ fontSize: "12px", color: "#666", marginTop: "4px" }}>
-                        {loading ? "Loading..." : `${processedAddresses.length} address${processedAddresses.length !== 1 ? 'es' : ''} found`}
+                        {loading ? "Loading..." : `${schools.length} schools found`}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "#888", marginTop: "2px" }}>
+                        For: {selectedAddress.properties.full_address ||
+                            (selectedAddress.properties.civic_number && selectedAddress.properties.street_name
+                                ? `${selectedAddress.properties.civic_number} ${selectedAddress.properties.street_name}`
+                                : "Unknown address")}
                     </div>
                 </div>
                 <button
                     type="button"
-                    onClick={() => eventBus.emit("close-table", {})}
+                    onClick={() => eventBus.emit("close-schools", {})}
                     style={{
                         background: "none",
                         border: "none",
@@ -150,14 +147,14 @@ export function AddressTable({ parcelId }: Props) {
                     }}>
                         {error}
                     </div>
-                ) : processedAddresses.length === 0 && !loading ? (
+                ) : schools.length === 0 && !loading ? (
                     <div style={{
                         padding: "16px",
                         color: "#666",
                         fontSize: "14px",
                         textAlign: "center"
                     }}>
-                        No addresses found
+                        No schools found
                     </div>
                 ) : (
                     <table style={{
@@ -174,26 +171,25 @@ export function AddressTable({ parcelId }: Props) {
                                     textAlign: "left",
                                     fontWeight: 600,
                                     color: "#000",
-                                    width: "60%",
+                                    width: "70%",
                                 }}>
-                                    Address
+                                    School Name
                                 </th>
                                 <th style={{
                                     padding: "8px",
                                     textAlign: "left",
                                     fontWeight: 600,
                                     color: "#000",
-                                    width: "40%",
+                                    width: "30%",
                                 }}>
-                                    Address Point ID
+                                    Distance
                                 </th>
                             </tr>
                         </thead>
                         <tbody>
-                            {processedAddresses.map((address) => (
+                            {schools.map((school, index) => (
                                 <tr
-                                    key={address.properties.address_point_id}
-                                    onClick={() => handleRowClick(address)}
+                                    key={`${school.name}-${index}`}
                                     style={{
                                         cursor: "pointer",
                                         borderBottom: "1px solid #f0f0f0",
@@ -209,16 +205,16 @@ export function AddressTable({ parcelId }: Props) {
                                     <td style={{
                                         padding: "12px 8px",
                                         color: "#000",
-                                        fontWeight: address.displayAddress === "(unknown)" ? "normal" : "500",
+                                        fontWeight: "500",
                                     }}>
-                                        {address.displayAddress}
+                                        {school.name}
                                     </td>
                                     <td style={{
                                         padding: "12px 8px",
                                         color: "#666",
                                         fontSize: "12px",
                                     }}>
-                                        {address.properties.address_point_id}
+                                        {Math.round(school.dist_m)}m
                                     </td>
                                 </tr>
                             ))}
@@ -226,7 +222,6 @@ export function AddressTable({ parcelId }: Props) {
                     </table>
                 )}
             </div>
-
         </div>
     );
 }

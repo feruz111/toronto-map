@@ -3,14 +3,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource, type MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { AddressTable } from "@/components/AddressTable";
-import { SchoolsTable } from "@/components/SchoolsTable";
 import { SearchControl } from "@/components/SearchControl";
 import { eventBus } from "@/lib/events";
+import * as turf from "@turf/turf";
 
 interface SchoolFeature {
   name: string;
+  address_full: string;
   geom_geojson: string;
-  source_address: string;
+  dist_m: number;
+}
+
+interface LibraryFeature {
+  branchname: string;
+  address: string;
+  geom_geojson: string;
   dist_m: number;
 }
 
@@ -104,10 +111,14 @@ function setupInteractions(map: maplibregl.Map, onSelectionChange: (id: number |
         setSelected(map, null);
         loadAddressesForParcel(map, null);
         onSelectionChange(null);
+        // Clear buffer when deselecting
+        clearBufferSource(map);
       } else {
         setSelected(map, parcelId);
         loadAddressesForParcel(map, parcelId);
         onSelectionChange(parcelId);
+        // Update buffer with new polygon when selecting
+        updateBufferSource(map, [e.lngLat.lng, e.lngLat.lat]);
 
         // Build popup content
         const props = feature.properties || {};
@@ -122,7 +133,7 @@ function setupInteractions(map: maplibregl.Map, onSelectionChange: (id: number |
           </div>
         `;
 
-        new maplibregl.Popup({ closeOnClick: true })
+        new maplibregl.Popup({ closeOnClick: true, closeButton: false })
           .setLngLat(e.lngLat)
           .setHTML(html)
           .addTo(map);
@@ -155,6 +166,30 @@ async function loadAddressesForParcel(map: maplibregl.Map, parcelId: number | st
   }
 }
 
+function updateBufferSource(map: maplibregl.Map, coordinates: [number, number]) {
+  const bufferSource = map.getSource("buffer") as GeoJSONSource;
+  if (!bufferSource) return;
+
+  const points = turf.point(coordinates);
+  const buffer = turf.buffer(points, 2000, { units: 'meters' });
+
+  const geojson = {
+    type: "FeatureCollection" as const,
+    features: [buffer]
+  };
+
+  bufferSource.setData(geojson as any);
+  console.log(`[buffer] created 2000m buffer around point [${coordinates[0]}, ${coordinates[1]}]`);
+}
+
+function clearBufferSource(map: maplibregl.Map) {
+  const bufferSource = map.getSource("buffer") as GeoJSONSource;
+  if (!bufferSource) return;
+
+  bufferSource.setData({ type: "FeatureCollection", features: [] });
+  console.log("[buffer] cleared buffer");
+}
+
 async function loadSchoolsonMap(map: maplibregl.Map, schools: SchoolFeature[], addressCoords?: [number, number]) {
   const src = map.getSource("schools") as GeoJSONSource;
   const linesSrc = map.getSource("school-lines") as GeoJSONSource;
@@ -176,7 +211,7 @@ async function loadSchoolsonMap(map: maplibregl.Map, schools: SchoolFeature[], a
         geometry: geom,
         properties: {
           name: school.name,
-          source_address: school.source_address,
+          address_full: school.address_full,
           dist_m: school.dist_m
         }
       };
@@ -218,6 +253,69 @@ async function loadSchoolsonMap(map: maplibregl.Map, schools: SchoolFeature[], a
   console.log(`[schools] loaded ${features.length} schools on map${addressCoords ? ' with connecting lines' : ''}`);
 }
 
+async function loadLibrariesOnMap(map: maplibregl.Map, libraries: LibraryFeature[], addressCoords?: [number, number]) {
+  const src = map.getSource("libraries") as GeoJSONSource;
+  const linesSrc = map.getSource("library-lines") as GeoJSONSource;
+
+  if (!src || !linesSrc) return;
+
+  if (libraries.length === 0) {
+    src.setData({ type: "FeatureCollection", features: [] });
+    linesSrc.setData({ type: "FeatureCollection", features: [] });
+    return;
+  }
+
+  // Convert libraries data to GeoJSON features
+  const features = libraries.map(library => {
+    try {
+      const geom = JSON.parse(library.geom_geojson);
+      return {
+        type: "Feature" as const,
+        geometry: geom,
+        properties: {
+          branchname: library.branchname,
+          address: library.address,
+          dist_m: library.dist_m
+        }
+      };
+    } catch (error) {
+      console.error("Error parsing library geometry:", library.geom_geojson, error);
+      return null;
+    }
+  }).filter(Boolean);
+
+  const geojson = {
+    type: "FeatureCollection" as const,
+    features: features.filter((f): f is NonNullable<typeof f> => f !== null)
+  };
+
+  src.setData(geojson as any);
+
+  // Draw lines from address to each library
+  if (addressCoords) {
+    const lineFeatures = features.filter((f): f is NonNullable<typeof f> => f !== null).map(feature => ({
+      type: "Feature" as const,
+      geometry: {
+        type: "LineString" as const,
+        coordinates: [addressCoords, feature.geometry.coordinates]
+      },
+      properties: {
+        library_name: feature.properties.branchname,
+        distance: feature.properties.dist_m
+      }
+    }));
+
+    const linesGeoJson = {
+      type: "FeatureCollection" as const,
+      features: lineFeatures
+    };
+
+    linesSrc.setData(linesGeoJson as any);
+  }
+
+  console.log(`[libraries] loaded ${features.length} libraries on map${addressCoords ? ' with connecting lines' : ''}`);
+}
+
 async function checkDbHealth() {
   try {
     const res = await fetch("/api/db", { cache: "no-store" });
@@ -241,6 +339,13 @@ export default function Page() {
   const handleSchoolsChange = (schools: SchoolFeature[], addressCoords?: [number, number]) => {
     if (mapRef.current) {
       loadSchoolsonMap(mapRef.current, schools, addressCoords);
+    }
+  };
+
+  // Handler for library data changes
+  const handleLibrariesChange = (libraries: LibraryFeature[], addressCoords?: [number, number]) => {
+    if (mapRef.current) {
+      loadLibrariesOnMap(mapRef.current, libraries, addressCoords);
     }
   };
 
@@ -416,6 +521,24 @@ export default function Page() {
     };
 
     map.on("load", () => {
+      // Hide all text/symbol layers from the map style
+      const style = map.getStyle();
+      if (style && style.layers) {
+        style.layers.forEach((layer: any) => {
+          if (layer.type === "symbol" ||
+            (layer.layout && layer.layout["text-field"]) ||
+            (layer.id && layer.id.includes("label")) ||
+            (layer.id && layer.id.includes("text"))) {
+            try {
+              map.removeLayer(layer.id);
+            } catch (e) {
+              // Layer might already be removed or not found
+              console.log(`Could not remove layer: ${layer.id}`);
+            }
+          }
+        });
+      }
+
       // Add addresses source
       map.addSource("addresses", {
         type: "geojson",
@@ -430,6 +553,24 @@ export default function Page() {
 
       // Add school lines source
       map.addSource("school-lines", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+
+      // Add libraries source
+      map.addSource("libraries", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+
+      // Add library lines source
+      map.addSource("library-lines", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+
+      // Add buffer source
+      map.addSource("buffer", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] }
       });
@@ -460,13 +601,13 @@ export default function Page() {
         paint: {
           "circle-radius": [
             "interpolate", ["linear"], ["zoom"],
-            10, 6,
-            14, 8,
-            18, 10
+            10, 8,
+            14, 12,
+            18, 16
           ],
-          "circle-color": "#4CAF50",
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 2
+          "circle-color": "#FF0000",
+          "circle-stroke-color": "#FFFFFF",
+          "circle-stroke-width": 3
         }
       });
 
@@ -480,6 +621,60 @@ export default function Page() {
           "line-width": 2,
           "line-opacity": 0.7,
           "line-dasharray": [5, 5]
+        }
+      });
+
+      // Add libraries layer
+      map.addLayer({
+        id: "libraries-points",
+        type: "circle",
+        source: "libraries",
+        paint: {
+          "circle-radius": [
+            "interpolate", ["linear"], ["zoom"],
+            10, 8,
+            14, 12,
+            18, 16
+          ],
+          "circle-color": "#0066CC",
+          "circle-stroke-color": "#FFFFFF",
+          "circle-stroke-width": 3
+        }
+      });
+
+      // Add library lines layer
+      map.addLayer({
+        id: "library-lines",
+        type: "line",
+        source: "library-lines",
+        paint: {
+          "line-color": "#4A90E2",
+          "line-width": 2,
+          "line-opacity": 0.7,
+          "line-dasharray": [5, 5]
+        }
+      });
+
+      // Add buffer fill layer (semi-transparent)
+      map.addLayer({
+        id: "buffer-fill",
+        type: "fill",
+        source: "buffer",
+        paint: {
+          "fill-color": "#3b82f6",
+          "fill-opacity": 0.2
+        }
+      });
+
+      // Add buffer line layer (border)
+      map.addLayer({
+        id: "buffer-line",
+        type: "line",
+        source: "buffer",
+        paint: {
+          "line-color": "#3b82f6",
+          "line-width": 2,
+          "line-opacity": 0.8
         }
       });
 
@@ -530,7 +725,30 @@ export default function Page() {
           <div style="font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #000;">
             <div style="font-weight:600; color: #000; margin-bottom: 4px;">${schoolName}</div>
             <div style="color: #666; font-size: 11px;">Distance: ${Math.round(distance)}m</div>
-            <div style="color: #666; font-size: 11px; margin-top: 2px;">Address: ${props.source_address || 'Unknown'}</div>
+            <div style="color: #666; font-size: 11px; margin-top: 2px;">Address: ${props.address_full || 'Unknown'}</div>
+          </div>
+        `;
+
+        new maplibregl.Popup({ closeOnClick: true })
+          .setLngLat(e.lngLat)
+          .setHTML(html)
+          .addTo(map);
+      });
+
+      // Add click handler for libraries
+      map.on("click", "libraries-points", (e: MapLayerMouseEvent) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+
+        const props = feature.properties || {};
+        const libraryName = props.branchname;
+        const distance = props.dist_m;
+
+        const html = `
+          <div style="font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #000;">
+            <div style="font-weight:600; color: #000; margin-bottom: 4px;">${libraryName}</div>
+            <div style="color: #666; font-size: 11px;">Distance: ${Math.round(distance)}m</div>
+            <div style="color: #666; font-size: 11px; margin-top: 2px;">Address: ${props.address || 'Unknown'}</div>
           </div>
         `;
 
@@ -549,12 +767,30 @@ export default function Page() {
         map.getCanvas().style.cursor = "";
       });
 
+      // Change cursor on library hover
+      map.on("mouseenter", "libraries-points", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mouseleave", "libraries-points", () => {
+        map.getCanvas().style.cursor = "";
+      });
+
       // Add hover effect for school lines
       map.on("mouseenter", "school-lines", () => {
         map.getCanvas().style.cursor = "pointer";
       });
 
       map.on("mouseleave", "school-lines", () => {
+        map.getCanvas().style.cursor = "";
+      });
+
+      // Add hover effect for library lines
+      map.on("mouseenter", "library-lines", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mouseleave", "library-lines", () => {
         map.getCanvas().style.cursor = "";
       });
 
@@ -570,6 +806,28 @@ export default function Page() {
         const html = `
           <div style="font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #000;">
             <div style="font-weight:600; color: #000; margin-bottom: 4px;">Line to: ${schoolName}</div>
+            <div style="color: #666; font-size: 11px;">Distance: ${Math.round(distance)}m</div>
+          </div>
+        `;
+
+        new maplibregl.Popup({ closeOnClick: true })
+          .setLngLat(e.lngLat)
+          .setHTML(html)
+          .addTo(map);
+      });
+
+      // Add click handler for library lines
+      map.on("click", "library-lines", (e: MapLayerMouseEvent) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+
+        const props = feature.properties || {};
+        const libraryName = props.library_name;
+        const distance = props.distance;
+
+        const html = `
+          <div style="font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #000;">
+            <div style="font-weight:600; color: #000; margin-bottom: 4px;">Line to: ${libraryName}</div>
             <div style="color: #666; font-size: 11px;">Distance: ${Math.round(distance)}m</div>
           </div>
         `;
@@ -596,6 +854,8 @@ export default function Page() {
       setSelectedParcelId(null);
       setSelectedAddress(null);
       loadSchoolsonMap(map, []);
+      loadLibrariesOnMap(map, []);
+      clearBufferSource(map);
     };
 
     // Make it available globally for popup close button
@@ -654,20 +914,12 @@ export default function Page() {
       setSelectedAddress(address);
     };
 
-    // Set up event listener for close-schools events
-    const handleCloseSchools = () => {
-      setSelectedAddress(null);
-      if (mapRef.current) {
-        loadSchoolsonMap(mapRef.current, []);
-      }
-    };
 
 
     eventBus.on("focus-address", handleFocusAddress);
     eventBus.on("close-table", handleCloseTable);
     eventBus.on("select-parcel", handleSelectParcel);
     eventBus.on("select-address", handleSelectAddress);
-    eventBus.on("close-schools", handleCloseSchools);
 
     return () => {
       // Cleanup
@@ -675,7 +927,6 @@ export default function Page() {
       eventBus.off("close-table", handleCloseTable);
       eventBus.off("select-parcel", handleSelectParcel);
       eventBus.off("select-address", handleSelectAddress);
-      eventBus.off("close-schools", handleCloseSchools);
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
@@ -723,11 +974,13 @@ export default function Page() {
         Zoom in to load parcels
       </div>
 
-      {/* Address Table - Right Side */}
-      <AddressTable parcelId={selectedParcelId} />
-
-      {/* Schools Table - Left of Address Table */}
-      <SchoolsTable selectedAddress={selectedAddress} onSchoolsChange={handleSchoolsChange} />
+      {/* Address Table - Right Side (now includes schools and libraries) */}
+      <AddressTable
+        parcelId={selectedParcelId}
+        selectedAddress={selectedAddress}
+        onSchoolsChange={handleSchoolsChange}
+        onLibrariesChange={handleLibrariesChange}
+      />
     </div>
   );
 }

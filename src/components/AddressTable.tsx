@@ -17,14 +17,46 @@ interface AddressFeature {
     };
 }
 
-interface Props {
-    parcelId: number | string | null;
+interface School {
+    name: string;
+    address_full: string;
+    geom_geojson: string;
+    dist_m: number;
 }
 
-export function AddressTable({ parcelId }: Props) {
+interface Library {
+    branchname: string;
+    address: string;
+    geom_geojson: string;
+    dist_m: number;
+}
+
+interface CombinedResponse {
+    libraries: Library[];
+    schools: School[];
+}
+
+interface Props {
+    parcelId: number | string | null;
+    selectedAddress: AddressFeature | null;
+    onSchoolsChange?: (schools: School[], addressCoords?: [number, number]) => void;
+    onLibrariesChange?: (libraries: Library[], addressCoords?: [number, number]) => void;
+}
+
+export function AddressTable({ parcelId, selectedAddress, onSchoolsChange, onLibrariesChange }: Props) {
     const [addresses, setAddresses] = useState<AddressFeature[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // Schools state
+    const [schools, setSchools] = useState<School[]>([]);
+    const [schoolsLoading, setSchoolsLoading] = useState(false);
+    const [schoolsError, setSchoolsError] = useState<string | null>(null);
+
+    // Libraries state
+    const [libraries, setLibraries] = useState<Library[]>([]);
+    const [librariesLoading, setLibrariesLoading] = useState(false);
+    const [librariesError, setLibrariesError] = useState<string | null>(null);
 
     useEffect(() => {
         if (!parcelId) {
@@ -58,6 +90,59 @@ export function AddressTable({ parcelId }: Props) {
 
         fetchAddresses();
     }, [parcelId]);
+
+    // Fetch schools and libraries when an address is selected
+    useEffect(() => {
+        if (!selectedAddress) {
+            setSchools([]);
+            setSchoolsError(null);
+            setLibraries([]);
+            setLibrariesError(null);
+            return;
+        }
+
+        const fetchSchoolsAndLibraries = async () => {
+            setSchoolsLoading(true);
+            setLibrariesLoading(true);
+            setSchoolsError(null);
+            setLibrariesError(null);
+
+            try {
+                const res = await fetch(
+                    `/api/libraries-and-schools-within-2km?lat=${selectedAddress.geometry.coordinates[1]}&lng=${selectedAddress.geometry.coordinates[0]}`,
+                    { cache: "no-store" }
+                );
+
+                if (!res.ok) {
+                    throw new Error(`Failed to fetch schools and libraries: ${res.status}`);
+                }
+
+                const data: CombinedResponse = await res.json();
+
+                // Set schools data
+                setSchools(data.schools || []);
+                onSchoolsChange?.(data.schools || [], selectedAddress.geometry.coordinates);
+
+                // Set libraries data
+                setLibraries(data.libraries || []);
+                onLibrariesChange?.(data.libraries || [], selectedAddress.geometry.coordinates);
+            } catch (err) {
+                console.error("Error fetching schools and libraries:", err);
+                const errorMsg = "Failed to load schools and libraries";
+                setSchoolsError(errorMsg);
+                setLibrariesError(errorMsg);
+                setSchools([]);
+                setLibraries([]);
+                onSchoolsChange?.([]);
+                onLibrariesChange?.([]);
+            } finally {
+                setSchoolsLoading(false);
+                setLibrariesLoading(false);
+            }
+        };
+
+        fetchSchoolsAndLibraries();
+    }, [selectedAddress, onSchoolsChange, onLibrariesChange]);
 
     const handleRowClick = async (address: AddressFeature) => {
         eventBus.emit("focus-address", {
@@ -137,9 +222,9 @@ export function AddressTable({ parcelId }: Props) {
             </div>
 
             <div style={{
-                flex: 1,
                 overflow: "auto",
                 padding: "8px",
+                flexGrow: selectedAddress ? 0 : 1,
             }}>
                 {error ? (
                     <div style={{
@@ -226,6 +311,262 @@ export function AddressTable({ parcelId }: Props) {
                     </table>
                 )}
             </div>
+
+            {/* Schools Section - only show if address is selected */}
+            {selectedAddress && (
+                <>
+                    <div style={{
+                        borderTop: "2px solid #e0e0e0",
+                        padding: "8px 16px",
+                        backgroundColor: "#f9f9f9",
+                        marginTop: "8px",
+                    }}>
+                        <h4 style={{
+                            margin: 0,
+                            fontSize: "14px",
+                            fontWeight: 600,
+                            color: "#000",
+                            marginBottom: "8px"
+                        }}>
+                            Nearest Schools
+                        </h4>
+                        <div style={{ fontSize: "12px", color: "#666", marginBottom: "8px" }}>
+                            {schoolsLoading ? "Loading..." : `${schools.length} schools found`}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#888" }}>
+                            For: {selectedAddress.properties.full_address ||
+                                (selectedAddress.properties.civic_number && selectedAddress.properties.street_name
+                                    ? `${selectedAddress.properties.civic_number} ${selectedAddress.properties.street_name}`
+                                    : "Unknown address")}
+                        </div>
+                    </div>
+
+                    <div style={{
+                        overflow: "auto",
+                        padding: "8px",
+                        maxHeight: "250px",
+                        flex: 1,
+                    }}>
+                        {schoolsError ? (
+                            <div style={{
+                                padding: "16px",
+                                color: "#d32f2f",
+                                fontSize: "14px",
+                                textAlign: "center"
+                            }}>
+                                {schoolsError}
+                            </div>
+                        ) : schools.length === 0 && !schoolsLoading ? (
+                            <div style={{
+                                padding: "16px",
+                                color: "#666",
+                                fontSize: "14px",
+                                textAlign: "center"
+                            }}>
+                                No schools found
+                            </div>
+                        ) : (
+                            <table style={{
+                                width: "100%",
+                                borderCollapse: "collapse",
+                                fontSize: "13px",
+                            }}>
+                                <thead>
+                                    <tr style={{
+                                        borderBottom: "1px solid #e0e0e0",
+                                    }}>
+                                        <th style={{
+                                            padding: "6px",
+                                            textAlign: "left",
+                                            fontWeight: 600,
+                                            color: "#000",
+                                            width: "70%",
+                                        }}>
+                                            School Name
+                                        </th>
+                                        <th style={{
+                                            padding: "6px",
+                                            textAlign: "left",
+                                            fontWeight: 600,
+                                            color: "#000",
+                                            width: "30%",
+                                        }}>
+                                            Address
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {schools.map((school, index) => (
+                                        <tr
+                                            key={`${school.name}-${index}`}
+                                            style={{
+                                                cursor: "pointer",
+                                                borderBottom: "1px solid #f0f0f0",
+                                                transition: "background-color 0.2s",
+                                            }}
+                                            onMouseEnter={(e) => {
+                                                e.currentTarget.style.backgroundColor = "#f5f5f5";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                                e.currentTarget.style.backgroundColor = "transparent";
+                                            }}
+                                        >
+                                            <td style={{
+                                                padding: "8px 6px",
+                                                color: "#000",
+                                                fontWeight: "500",
+                                            }}>
+                                                {school.name}
+                                            </td>
+                                            <td style={{
+                                                padding: "8px 6px",
+                                                color: "#666",
+                                                fontSize: "11px",
+                                            }}>
+                                                {school.address_full || "Unknown"}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+
+                    {/* Libraries Section */}
+                    <div style={{
+                        borderTop: "2px solid #e0e0e0",
+                        padding: "8px 16px",
+                        backgroundColor: "#f9f9f9",
+                        marginTop: "8px",
+                    }}>
+                        <h4 style={{
+                            margin: 0,
+                            fontSize: "14px",
+                            fontWeight: 600,
+                            color: "#000",
+                            marginBottom: "8px"
+                        }}>
+                            Libraries Within 2km
+                        </h4>
+                        <div style={{ fontSize: "12px", color: "#666", marginBottom: "8px" }}>
+                            {librariesLoading ? "Loading..." : `${libraries.length} libraries found`}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "#888" }}>
+                            For: {selectedAddress.properties.full_address ||
+                                (selectedAddress.properties.civic_number && selectedAddress.properties.street_name
+                                    ? `${selectedAddress.properties.civic_number} ${selectedAddress.properties.street_name}`
+                                    : "Unknown address")}
+                        </div>
+                    </div>
+
+                    <div style={{
+                        overflow: "auto",
+                        padding: "8px",
+                        maxHeight: "200px",
+                        flex: 1,
+                    }}>
+                        {librariesError ? (
+                            <div style={{
+                                padding: "16px",
+                                color: "#d32f2f",
+                                fontSize: "14px",
+                                textAlign: "center"
+                            }}>
+                                {librariesError}
+                            </div>
+                        ) : libraries.length === 0 && !librariesLoading ? (
+                            <div style={{
+                                padding: "16px",
+                                color: "#666",
+                                fontSize: "14px",
+                                textAlign: "center"
+                            }}>
+                                No libraries found
+                            </div>
+                        ) : (
+                            <table style={{
+                                width: "100%",
+                                borderCollapse: "collapse",
+                                fontSize: "13px",
+                            }}>
+                                <thead>
+                                    <tr style={{
+                                        borderBottom: "1px solid #e0e0e0",
+                                    }}>
+                                        <th style={{
+                                            padding: "6px",
+                                            textAlign: "left",
+                                            fontWeight: 600,
+                                            color: "#000",
+                                            width: "50%",
+                                        }}>
+                                            Library Name
+                                        </th>
+                                        <th style={{
+                                            padding: "6px",
+                                            textAlign: "left",
+                                            fontWeight: 600,
+                                            color: "#000",
+                                            width: "25%",
+                                        }}>
+                                            Distance
+                                        </th>
+                                        <th style={{
+                                            padding: "6px",
+                                            textAlign: "left",
+                                            fontWeight: 600,
+                                            color: "#000",
+                                            width: "25%",
+                                        }}>
+                                            Address
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {libraries.map((library, index) => (
+                                        <tr
+                                            key={`${library.branchname}-${index}`}
+                                            style={{
+                                                cursor: "pointer",
+                                                borderBottom: "1px solid #f0f0f0",
+                                                transition: "background-color 0.2s",
+                                            }}
+                                            onMouseEnter={(e) => {
+                                                e.currentTarget.style.backgroundColor = "#f5f5f5";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                                e.currentTarget.style.backgroundColor = "transparent";
+                                            }}
+                                        >
+                                            <td style={{
+                                                padding: "8px 6px",
+                                                color: "#000",
+                                                fontWeight: "500",
+                                            }}>
+                                                {library.branchname}
+                                            </td>
+                                            <td style={{
+                                                padding: "8px 6px",
+                                                color: "#666",
+                                                fontSize: "11px",
+                                            }}>
+                                                {Math.round(library.dist_m)}m
+                                            </td>
+                                            <td style={{
+                                                padding: "8px 6px",
+                                                color: "#666",
+                                                fontSize: "11px",
+                                            }}>
+                                                {library.address}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                </>
+            )}
 
         </div>
     );

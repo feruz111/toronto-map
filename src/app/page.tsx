@@ -117,8 +117,7 @@ function setupInteractions(map: maplibregl.Map, onSelectionChange: (id: number |
         setSelected(map, parcelId);
         loadAddressesForParcel(map, parcelId);
         onSelectionChange(parcelId);
-        // Update buffer with new polygon when selecting
-        updateBufferSource(map, [e.lngLat.lng, e.lngLat.lat]);
+        // Buffer will be updated when an address is selected
 
         // Build popup content
         const props = feature.properties || {};
@@ -170,6 +169,7 @@ function updateBufferSource(map: maplibregl.Map, coordinates: [number, number]) 
   const bufferSource = map.getSource("buffer") as GeoJSONSource;
   if (!bufferSource) return;
 
+  // Create buffer in geographic coordinates (EPSG:4326) to match PostGIS geography calculations
   const points = turf.point(coordinates);
   const buffer = turf.buffer(points, 2000, { units: 'meters' });
 
@@ -912,6 +912,8 @@ export default function Page() {
     // Set up event listener for select-address events
     const handleSelectAddress = (address: AddressFeature) => {
       setSelectedAddress(address);
+      // Update buffer to center on the selected address coordinates
+      updateBufferSource(map, address.geometry.coordinates);
     };
 
 
@@ -972,6 +974,44 @@ export default function Page() {
         }}
       >
         Zoom in to load parcels
+      </div>
+
+      {/* Navigation Link - Top Right */}
+      <div
+        style={{
+          position: "absolute",
+          top: "20px",
+          right: "20px",
+          zIndex: 1000,
+        }}
+      >
+        <a
+          href="/nearest-schools"
+          style={{
+            background: "rgba(255, 255, 255, 0.95)",
+            color: "#000",
+            padding: "10px 16px",
+            borderRadius: "6px",
+            textDecoration: "none",
+            fontSize: "14px",
+            fontWeight: 600,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+            transition: "all 0.2s ease",
+            display: "inline-block",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(255, 255, 255, 1)";
+            e.currentTarget.style.transform = "translateY(-1px)";
+            e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.15)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(255, 255, 255, 0.95)";
+            e.currentTarget.style.transform = "translateY(0)";
+            e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.1)";
+          }}
+        >
+          🎓 Find Nearest Schools
+        </a>
       </div>
 
       {/* Address Table - Right Side (now includes schools and libraries) */}

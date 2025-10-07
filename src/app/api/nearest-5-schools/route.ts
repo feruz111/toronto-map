@@ -17,9 +17,11 @@ export async function GET(req: Request) {
   }
 
   const client = await pool.connect();
-  const params = [lng, lat];
 
-  const query = `
+  try {
+    const params = [lng, lat];
+
+    const query = `
 SELECT name,ST_AsGeoJSON(geom) AS geom_geojson,source_address,
 ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS dist_m
 FROM schools
@@ -27,9 +29,22 @@ ORDER BY geom <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)
 LIMIT 5
 `;
 
-  const result = await client.query(query, params);
+    const result = await client.query(query, params);
 
-  console.log(result, "resultresult");
+    console.log(
+      "[nearest-5-schools] Query result:",
+      result.rows.length,
+      "schools found",
+    );
 
-  return NextResponse.json(result.rows);
+    return NextResponse.json(result.rows);
+  } catch (error) {
+    console.error("[nearest-5-schools] Database error:", error);
+    return NextResponse.json(
+      { error: "Database query failed" },
+      { status: 500 },
+    );
+  } finally {
+    client.release();
+  }
 }
